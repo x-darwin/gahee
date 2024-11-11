@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import { PaymentCardIcons } from "./payment-card-icons";
 import { Shield, Lock, RotateCcw } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 interface PaymentFormProps {
   onSubmit: (e: React.FormEvent) => void;
@@ -76,6 +77,8 @@ export function PaymentForm({ onSubmit }: PaymentFormProps) {
   const [couponCode, setCouponCode] = useState("");
   const [selectedFeatures, setSelectedFeatures] = useState<string[]>([]);
   const [showDialog, setShowDialog] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const { toast } = useToast();
 
   const selectedPackage = packages.find((pkg) => pkg.id === selectedPackageId);
 
@@ -90,9 +93,99 @@ export function PaymentForm({ onSubmit }: PaymentFormProps) {
     return total.toFixed(2);
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const createCheckout = async () => {
+    try {
+      const response = await fetch("/api/sumup/create-checkout", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          amount: parseFloat(calculateTotal()),
+          currency: "EUR",
+          checkout_reference: `ORDER-${Date.now()}`,
+          description: `StreamVault ${selectedPackage?.name}`,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to create checkout");
+      }
+
+      const checkout = await response.json();
+      return checkout.id;
+    } catch (error) {
+      console.error("Error creating checkout:", error);
+      throw error;
+    }
+  };
+
+  const completeCheckout = async (checkoutId: string, cardData: any) => {
+    try {
+      const response = await fetch(`/api/sumup/complete-checkout/${checkoutId}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          payment_type: "card",
+          card: cardData,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Payment failed");
+      }
+
+      const result = await response.json();
+      return result;
+    } catch (error) {
+      console.error("Error completing checkout:", error);
+      throw error;
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    setIsProcessing(true);
     setShowDialog(true);
+
+    try {
+      // Get form data
+      const formData = new FormData(e.currentTarget);
+      const cardData = {
+        name: formData.get("name"),
+        number: formData.get("card"),
+        expiry_month: formData.get("expiry")?.toString().split("/")[0],
+        expiry_year: formData.get("expiry")?.toString().split("/")[1],
+        cvv: formData.get("cvv"),
+      };
+
+      // Create checkout
+      const checkoutId = await createCheckout();
+
+      // Complete checkout with card details
+      const result = await completeCheckout(checkoutId, cardData);
+
+      if (result.status === "PAID") {
+        toast({
+          title: "Payment Successful",
+          description: "Your subscription has been activated.",
+        });
+        onSubmit(e);
+      } else {
+        throw new Error("Payment failed");
+      }
+    } catch (error) {
+      toast({
+        title: "Payment Failed",
+        description: "Please try again or contact support.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsProcessing(false);
+      setShowDialog(false);
+    }
   };
 
   return (
@@ -198,6 +291,7 @@ export function PaymentForm({ onSubmit }: PaymentFormProps) {
                   <Label htmlFor="email">Email</Label>
                   <Input
                     id="email"
+                    name="email"
                     type="email"
                     placeholder="your@email.com"
                     required
@@ -207,6 +301,7 @@ export function PaymentForm({ onSubmit }: PaymentFormProps) {
                   <Label htmlFor="name">Full Name</Label>
                   <Input
                     id="name"
+                    name="name"
                     placeholder="John Doe"
                     required
                   />
@@ -215,6 +310,7 @@ export function PaymentForm({ onSubmit }: PaymentFormProps) {
                   <Label htmlFor="phone">Phone Number</Label>
                   <Input
                     id="phone"
+                    name="phone"
                     type="tel"
                     placeholder="+1 (234) 567-8900"
                     required
@@ -226,6 +322,7 @@ export function PaymentForm({ onSubmit }: PaymentFormProps) {
                 <Label htmlFor="card">Card Number</Label>
                 <Input
                   id="card"
+                  name="card"
                   placeholder="4242 4242 4242 4242"
                   required
                 />
@@ -236,6 +333,7 @@ export function PaymentForm({ onSubmit }: PaymentFormProps) {
                   <Label htmlFor="expiry">Expiry Date</Label>
                   <Input
                     id="expiry"
+                    name="expiry"
                     placeholder="MM/YY"
                     required
                   />
@@ -244,6 +342,7 @@ export function PaymentForm({ onSubmit }: PaymentFormProps) {
                   <Label htmlFor="cvv">CVV</Label>
                   <Input
                     id="cvv"
+                    name="cvv"
                     type="password"
                     maxLength={4}
                     placeholder="123"
@@ -269,8 +368,13 @@ export function PaymentForm({ onSubmit }: PaymentFormProps) {
               </div>
             </CardContent>
             <CardFooter className="flex flex-col space-y-4">
-              <Button type="submit" className="w-full" size="lg">
-                Pay ${calculateTotal()} Now
+              <Button 
+                type="submit" 
+                className="w-full" 
+                size="lg"
+                disabled={isProcessing}
+              >
+                {isProcessing ? "Processing..." : `Pay ${calculateTotal()} EUR Now`}
               </Button>
               <Button
                 variant="outline"
